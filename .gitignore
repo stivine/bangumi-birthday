@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+
+# 数据文件（不入库）
+*.jsonlines
+*.csv
+*.tsv
+
+# 密钥
+.env
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 前端
+node_modules/
+dist/
+
+# 测试 / 覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# 生成的缓存 JSON
+person_entries.json
+character_entries.json
+
+# Excel 临时文件
+~$*.xlsx
+~$*.xlsm
+
+# 日志
+*.log

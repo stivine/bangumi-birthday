@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bangumi-birthday"
+version = "1.0.0"
+description = "Bangumi角色生日追踪与查询系统"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Stivine" }]
+keywords = ["bangumi", "anime", "birthday", "characters"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "requests>=2.32",
+    "httpx>=0.28",
+    "quart>=0.20",
+    "pymongo>=4.10",
+    "motor>=3.6",
+    "redis[asyncio]>=5.2",
+    "tqdm>=4.67",
+    "click>=8.1",
+    "pandas>=2.2",
+    "openpyxl>=3.1",
+    "beautifulsoup4>=4.12",
+    "selenium>=4.27",
+    "webdriver-manager>=4.0",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "python-dotenv>=1.0",
+    "uvicorn[standard]>=0.34",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "pytest-cov>=6.0",
+    "ruff>=0.9",
+    "mypy>=1.14",
+]
+
+[project.scripts]
+bgm-birthday = "bangumi_birthday.cli.main:cli"
+bgm-etl = "bangumi_birthday.etl.pipeline:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["bangumi_birthday"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
