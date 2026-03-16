@@ -120,7 +120,7 @@ def extract_chinese_name_from_infobox(infobox: str) -> str:
     if not m:
         return ""
 
-    name = m.group(1).strip()
+    name = m.group(1).strip().strip("\r")
     # 去掉以 "|" 开头的异常值（数据格式错误）
     if name.startswith("|"):
         return ""
