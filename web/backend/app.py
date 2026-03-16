@@ -34,6 +34,19 @@ def create_app() -> Quart:
     Quart
         配置好的 Quart 应用。
     """
+    # ── 日志配置（输出到终端，与 uvicorn 格式保持一致） ──────────────────
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        stream=sys.stdout,
+        force=True,          # 覆盖 uvicorn 已设置的 root handler
+    )
+    # 压低第三方库的噪音日志
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("motor").setLevel(logging.WARNING)
+    logging.getLogger("pymongo").setLevel(logging.WARNING)
+
     app = Quart(__name__)
 
     # ── CORS ─────────────────────────────────────────────────────────────

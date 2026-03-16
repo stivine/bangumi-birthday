@@ -12,6 +12,8 @@ GET /api/hbd2waifu       — 用户收藏中，指定日期生日的角色
 from __future__ import annotations
 
 import logging
+import re
+import time
 from datetime import date
 
 import httpx
@@ -46,8 +48,6 @@ async def date_birthday(date_str: str) -> tuple:
     返回指定日期生日的所有角色（全站）。
     date_str: MM-DD 格式
     """
-    # 简单格式验证
-    import re
     if not re.fullmatch(r"\d{2}-\d{2}", date_str):
         return jsonify({"error": "日期格式不正确，应为 MM-DD"}), 400
 
@@ -66,17 +66,20 @@ async def user_birthday() -> tuple:
         date (optional, default=today): MM-DD 格式
         subject_type (optional): Bangumi 条目类型
     """
+    t0 = time.monotonic()
+
     userid = request.args.get("userid", "").strip()
     if not userid:
         return jsonify({"error": "缺少参数：userid"}), 400
 
     date_str = request.args.get("date", _today_str()).strip()
-    import re
     if not re.fullmatch(r"\d{2}-\d{2}", date_str):
         return jsonify({"error": "date 格式不正确，应为 MM-DD"}), 400
 
     subject_type_raw = request.args.get("subject_type")
     subject_type = int(subject_type_raw) if subject_type_raw else None
+
+    logger.info("hbd2waifu  user=%-20s  date=%s", userid, date_str)
 
     http_client: httpx.AsyncClient = current_app.extensions["http_client"]
     svc = current_app.extensions["birthday_svc"]
@@ -99,4 +102,11 @@ async def user_birthday() -> tuple:
         return jsonify({"error": "服务器内部错误"}), 500
 
     characters = await svc.get_characters_by_date(date_str, subject_ids=subject_ids)
+
+    elapsed = time.monotonic() - t0
+    logger.info(
+        "hbd2waifu  user=%-20s  date=%s  subjects=%d  results=%d  total=%.2fs",
+        userid, date_str, len(subject_ids), len(characters), elapsed,
+    )
+
     return jsonify(characters), 200

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -57,6 +58,8 @@ async def fetch_user_subject_ids(
     if collection_type is not None:
         params["type"] = collection_type
 
+    t0 = time.monotonic()
+
     # ── 第一页：获取总数 ─────────────────────────────────────────────────
     resp = await client.get(url, params=params)
     resp.raise_for_status()
@@ -66,6 +69,11 @@ async def fetch_user_subject_ids(
     all_ids: list[int] = [item["subject_id"] for item in first_data.get("data", [])]
 
     if total <= PAGE_SIZE:
+        elapsed = time.monotonic() - t0
+        logger.info(
+            "Bangumi API  user=%-20s  total=%d  fetched=%d  pages=1  %.2fs",
+            username, total, len(all_ids), elapsed,
+        )
         return all_ids
 
     # ── 并发获取剩余页 ────────────────────────────────────────────────────
@@ -83,5 +91,10 @@ async def fetch_user_subject_ids(
     for page in pages:
         all_ids.extend(page)
 
-    logger.debug("用户 %s 共获取 %d 个 subject_id", username, len(all_ids))
+    elapsed = time.monotonic() - t0
+    n_pages = 1 + len(list(offsets))
+    logger.info(
+        "Bangumi API  user=%-20s  total=%d  fetched=%d  pages=%d  %.2fs",
+        username, total, len(all_ids), n_pages, elapsed,
+    )
     return all_ids

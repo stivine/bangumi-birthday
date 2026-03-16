@@ -42,10 +42,11 @@ class BirthdayService:
         try:
             raw = await self._redis.get(key)
             if raw:
-                logger.debug("缓存命中：%s", key)
+                logger.info("Redis HIT  %s", key)
                 return json.loads(raw)
+            logger.info("Redis MISS %s", key)
         except RedisError as exc:
-            logger.warning("Redis 读取失败，降级为直查数据库：%s", exc)
+            logger.warning("Redis 不可用，降级直查 MongoDB：%s", exc)
         return None
 
     async def _cache_set(self, key: str, data: list[dict[str, Any]]) -> None:
