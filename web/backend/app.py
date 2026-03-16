@@ -7,17 +7,18 @@ Quart Web 应用工厂
 - Redis 仅在运行时初始化，支持优雅关闭
 - 所有路由模块化注册
 - httpx.AsyncClient 在应用生命周期内复用，避免每次请求创建新连接
+- quart-cors 处理跨域，供浏览器插件（油猴脚本）直接调用
 """
 
 from __future__ import annotations
 
 import logging
 import sys
-from datetime import date
 
 import httpx
 import redis.asyncio as aioredis
 from quart import Quart
+from quart_cors import cors  # type: ignore[import]
 
 from web.backend.routes.birthday import birthday_bp
 
@@ -35,13 +36,20 @@ def create_app() -> Quart:
     """
     app = Quart(__name__)
 
+    # ── CORS ─────────────────────────────────────────────────────────────
+    # 浏览器插件（油猴脚本）从任意页面跨域调用 /api/*，需要允许所有来源。
+    # allow_origin="*" 时浏览器不会发送 Cookie，对本项目无影响。
+    app = cors(app, allow_origin="*")
+
     # ── 加载配置 ─────────────────────────────────────────────────────────
-    # 必须在导入时访问，避免循环导入
     sys.path.insert(0, str(__file__).rsplit("/web/", 1)[0])
 
     try:
         from bangumi_birthday.config import get_settings
         settings = get_settings()
+        # 用配置中的 cors_allow_origin 覆盖默认的 *（若有需要）
+        if settings.cors_allow_origin != "*":
+            app = cors(app, allow_origin=settings.cors_allow_origin)
     except Exception:
         # 如果包未安装，使用默认值
         class _Settings:

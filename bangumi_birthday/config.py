@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     bgm_api_base: str = "https://api.bgm.tv/v0"
     bgm_user_agent: str = "stivine/bangumi-birthday/1.0 (https://github.com/stivine/bangumi-birthday)"
 
+    # ── CORS ─────────────────────────────────────────────────────
+    # 浏览器插件（油猴脚本）跨域调用时需要允许所有来源（"*"）。
+    # 若需要限制，改为具体域名，如 "https://bgm.tv"。
+    cors_allow_origin: str = "*"
+
     @field_validator("log_level")
     @classmethod
     def _validate_log_level(cls, v: str) -> str:
