@@ -49,20 +49,12 @@ def create_app() -> Quart:
 
     app = Quart(__name__)
 
-    # ── CORS ─────────────────────────────────────────────────────────────
-    # 浏览器插件（油猴脚本）从任意页面跨域调用 /api/*，需要允许所有来源。
-    # allow_origin="*" 时浏览器不会发送 Cookie，对本项目无影响。
-    app = cors(app, allow_origin="*")
-
     # ── 加载配置 ─────────────────────────────────────────────────────────
     sys.path.insert(0, str(__file__).rsplit("/web/", 1)[0])
 
     try:
         from bangumi_birthday.config import get_settings
         settings = get_settings()
-        # 用配置中的 cors_allow_origin 覆盖默认的 *（若有需要）
-        if settings.cors_allow_origin != "*":
-            app = cors(app, allow_origin=settings.cors_allow_origin)
     except Exception:
         # 如果包未安装，使用默认值
         class _Settings:
@@ -73,7 +65,13 @@ def create_app() -> Quart:
             bgm_user_agent = "stivine/bangumi-birthday/1.0"
             col_characters = "characters"
             col_date_char_sub = "date_char_sub"
+            cors_allow_origin = "*"
         settings = _Settings()  # type: ignore[assignment]
+
+    # ── CORS ─────────────────────────────────────────────────────────────
+    # cors() 只能调用一次，重复调用会导致 header 被重复注入（*, *），
+    # 浏览器会因为 multiple values 拒绝请求。
+    app = cors(app, allow_origin=settings.cors_allow_origin)
 
     # ── 生命周期钩子 ──────────────────────────────────────────────────────
     @app.before_serving
