@@ -63,7 +63,60 @@ class BirthdayService:
         except RedisError as exc:
             logger.warning("Redis 写入失败（缓存跳过）：%s", exc)
 
+    async def _cache_get_ids(self, key: str) -> list[int] | None:
+        """从 Redis 读取 subject_ids 列表缓存，未命中或失败返回 None。"""
+        try:
+            raw = await self._redis.get(key)
+            if raw:
+                logger.info("Redis HIT  %s", key)
+                return json.loads(raw)
+            logger.info("Redis MISS %s", key)
+        except RedisError as exc:
+            logger.warning("Redis 不可用，降级直查 Bangumi API：%s", exc)
+        return None
+
+    async def _cache_set_ids(self, key: str, ids: list[int]) -> None:
+        """写入 subject_ids 列表到 Redis，使用单独的 user_cache_ttl。"""
+        try:
+            await self._redis.setex(
+                key,
+                self._settings.user_cache_ttl,
+                json.dumps(ids),
+            )
+        except RedisError as exc:
+            logger.warning("Redis 写入失败（缓存跳过）：%s", exc)
+
     # ── 公开查询接口 ──────────────────────────────────────────────────────
+
+    async def get_user_subject_ids(
+        self,
+        username: str,
+        *,
+        http_client: Any,
+        subject_type: int | None = None,
+    ) -> list[int]:
+        """
+        获取用户收藏的 subject_id 列表，结果缓存 user_cache_ttl 秒。
+
+        Redis 命中时直接返回，避免每次请求都打 Bangumi 外网 API。
+        """
+        from web.backend.services.bangumi_api import fetch_user_subject_ids
+
+        cache_key = f"user_subjects:{username}"
+        if subject_type is not None:
+            cache_key += f":type{subject_type}"
+
+        cached = await self._cache_get_ids(cache_key)
+        if cached is not None:
+            return cached
+
+        ids = await fetch_user_subject_ids(
+            username,
+            client=http_client,
+            subject_type=subject_type,
+        )
+        await self._cache_set_ids(cache_key, ids)
+        return ids
 
     async def get_characters_by_date(
         self,

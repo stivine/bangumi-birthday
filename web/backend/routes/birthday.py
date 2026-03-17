@@ -85,11 +85,9 @@ async def user_birthday() -> tuple:
     svc = current_app.extensions["birthday_svc"]
 
     try:
-        from web.backend.services.bangumi_api import fetch_user_subject_ids
-
-        subject_ids = await fetch_user_subject_ids(
+        subject_ids = await svc.get_user_subject_ids(
             userid,
-            client=http_client,
+            http_client=http_client,
             subject_type=subject_type,
         )
     except httpx.HTTPStatusError as exc:
