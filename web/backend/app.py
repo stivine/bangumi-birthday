@@ -7,7 +7,7 @@ Quart Web 应用工厂
 - Redis 仅在运行时初始化，支持优雅关闭
 - 所有路由模块化注册
 - httpx.AsyncClient 在应用生命周期内复用，避免每次请求创建新连接
-- quart-cors 处理跨域，供浏览器插件（油猴脚本）直接调用
+- CORS 由上游 nginx 统一处理，应用层不重复注入
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ import sys
 import httpx
 import redis.asyncio as aioredis
 from quart import Quart
-from quart_cors import cors  # type: ignore[import]
 
 from web.backend.routes.birthday import birthday_bp
 
@@ -67,11 +66,6 @@ def create_app() -> Quart:
             col_date_char_sub = "date_char_sub"
             cors_allow_origin = "*"
         settings = _Settings()  # type: ignore[assignment]
-
-    # ── CORS ─────────────────────────────────────────────────────────────
-    # cors() 只能调用一次，重复调用会导致 header 被重复注入（*, *），
-    # 浏览器会因为 multiple values 拒绝请求。
-    app = cors(app, allow_origin=settings.cors_allow_origin)
 
     # ── 生命周期钩子 ──────────────────────────────────────────────────────
     @app.before_serving
