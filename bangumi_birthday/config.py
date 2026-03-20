@@ -51,8 +51,8 @@ class Settings(BaseSettings):
 
     # ── Redis ───────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
-    cache_ttl: int = 3600        # 角色查询结果缓存 TTL（秒）
-    user_cache_ttl: int = 600    # 用户收藏 subject_ids 缓存 TTL（秒）
+    cache_ttl: int = 43200        # 角色查询结果缓存 TTL（秒，默认 12 小时）
+    user_cache_ttl: int = 43200  # 用户收藏 subject_ids 缓存 TTL（秒，默认 12 小时）
 
     # ── 浏览器（CLI 可选） ─────────────────────────────────────
     browser_path: str | None = None
