@@ -76,16 +76,18 @@ async def fetch_user_subject_ids(
         )
         return all_ids
 
-    # ── 并发获取剩余页 ────────────────────────────────────────────────────
+    # ── 并发获取剩余页（信号量限制并发数，避免连接池耗尽） ───────────────
     offsets = range(PAGE_SIZE, total, PAGE_SIZE)
+    sem = asyncio.Semaphore(5)  # 单次请求最多 5 个并发连接
 
     async def _fetch_page(offset: int) -> list[int]:
-        page_params = {**params, "offset": offset}
-        r = await client.get(url, params=page_params)
-        if r.status_code != 200:
-            logger.warning("获取 offset=%d 失败：HTTP %d", offset, r.status_code)
-            return []
-        return [item["subject_id"] for item in r.json().get("data", [])]
+        async with sem:
+            page_params = {**params, "offset": offset}
+            r = await client.get(url, params=page_params)
+            if r.status_code != 200:
+                logger.warning("获取 offset=%d 失败：HTTP %d", offset, r.status_code)
+                return []
+            return [item["subject_id"] for item in r.json().get("data", [])]
 
     pages = await asyncio.gather(*[_fetch_page(o) for o in offsets])
     for page in pages:
