@@ -95,6 +95,12 @@ async def user_birthday() -> tuple:
             return jsonify({"error": f"用户 {userid!r} 不存在"}), 404
         logger.error("Bangumi API 请求失败：%s", exc)
         return jsonify({"error": "获取用户收藏失败，请稍后重试"}), 502
+    except httpx.PoolTimeout as exc:
+        logger.warning("Bangumi API 连接池繁忙：%s", exc)
+        return jsonify({"error": "上游服务繁忙，请稍后重试"}), 503
+    except httpx.RequestError as exc:
+        logger.error("Bangumi API 网络异常：%s", exc)
+        return jsonify({"error": "上游服务暂时不可用，请稍后重试"}), 503
     except Exception as exc:
         logger.exception("未知错误：%s", exc)
         return jsonify({"error": "服务器内部错误"}), 500

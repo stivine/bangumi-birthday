@@ -18,6 +18,40 @@ logger = logging.getLogger(__name__)
 BGM_API_BASE = "https://api.bgm.tv/v0"
 USER_AGENT = "stivine/bangumi-birthday/1.0 (https://github.com/stivine/bangumi-birthday)"
 PAGE_SIZE = 100
+MAX_OUTBOUND_CONCURRENCY = 20
+MAX_RETRIES = 2
+RETRY_BACKOFF_BASE = 0.3
+
+_BGM_REQUEST_SEM = asyncio.Semaphore(MAX_OUTBOUND_CONCURRENCY)
+
+
+async def _get_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    params: dict[str, Any],
+) -> httpx.Response:
+    """
+    Bangumi API GET 请求包装：
+    - 全局并发限流，避免连接池被瞬时打满
+    - 对连接池等待超时等暂时性错误做有限重试
+    """
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            async with _BGM_REQUEST_SEM:
+                return await client.get(url, params=params)
+        except (httpx.PoolTimeout, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+            if attempt >= MAX_RETRIES:
+                raise
+            sleep_s = RETRY_BACKOFF_BASE * (2 ** attempt)
+            logger.warning(
+                "Bangumi API 临时失败（%s），%.1fs 后重试 %d/%d",
+                exc.__class__.__name__,
+                sleep_s,
+                attempt + 1,
+                MAX_RETRIES,
+            )
+            await asyncio.sleep(sleep_s)
 
 
 async def fetch_user_subject_ids(
@@ -61,7 +95,7 @@ async def fetch_user_subject_ids(
     t0 = time.monotonic()
 
     # ── 第一页：获取总数 ─────────────────────────────────────────────────
-    resp = await client.get(url, params=params)
+    resp = await _get_with_retry(client, url, params=params)
     resp.raise_for_status()
     first_data = resp.json()
 
@@ -83,7 +117,7 @@ async def fetch_user_subject_ids(
     async def _fetch_page(offset: int) -> list[int]:
         async with sem:
             page_params = {**params, "offset": offset}
-            r = await client.get(url, params=page_params)
+            r = await _get_with_retry(client, url, params=page_params)
             if r.status_code != 200:
                 logger.warning("获取 offset=%d 失败：HTTP %d", offset, r.status_code)
                 return []
