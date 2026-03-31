@@ -9,6 +9,7 @@ Redis 为可选依赖：连接失败时自动降级为直查 MongoDB，
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -31,6 +32,8 @@ class BirthdayService:
         self._db = db
         self._redis = redis_client
         self._settings = get_settings()
+        self._user_subject_lock = asyncio.Lock()
+        self._user_subject_inflight: dict[str, asyncio.Task[list[int]]] = {}
 
     # ── 缓存辅助方法（所有 Redis 操作集中在此，统一做异常降级） ──────────
 
@@ -110,13 +113,14 @@ class BirthdayService:
         if cached is not None:
             return cached
 
-        ids = await fetch_user_subject_ids(
-            username,
-            client=http_client,
+        task = await self._get_or_create_user_subject_task(
+            cache_key=cache_key,
+            username=username,
+            http_client=http_client,
             subject_type=subject_type,
+            fetcher=fetch_user_subject_ids,
         )
-        await self._cache_set_ids(cache_key, ids)
-        return ids
+        return await task
 
     async def get_characters_by_date(
         self,
@@ -211,3 +215,54 @@ class BirthdayService:
 
         await self._cache_set(cache_key, result)
         return result
+
+    async def _get_or_create_user_subject_task(
+        self,
+        *,
+        cache_key: str,
+        username: str,
+        http_client: Any,
+        subject_type: int | None,
+        fetcher: Any,
+    ) -> asyncio.Task[list[int]]:
+        async with self._user_subject_lock:
+            existing = self._user_subject_inflight.get(cache_key)
+            if existing is not None:
+                logger.info("复用进行中的用户收藏抓取任务 %s", cache_key)
+                return existing
+
+            task = asyncio.create_task(
+                self._fetch_and_cache_user_subject_ids(
+                    cache_key=cache_key,
+                    username=username,
+                    http_client=http_client,
+                    subject_type=subject_type,
+                    fetcher=fetcher,
+                )
+            )
+            self._user_subject_inflight[cache_key] = task
+
+        def _cleanup(completed: asyncio.Task[list[int]]) -> None:
+            current = self._user_subject_inflight.get(cache_key)
+            if current is completed:
+                self._user_subject_inflight.pop(cache_key, None)
+
+        task.add_done_callback(_cleanup)
+        return task
+
+    async def _fetch_and_cache_user_subject_ids(
+        self,
+        *,
+        cache_key: str,
+        username: str,
+        http_client: Any,
+        subject_type: int | None,
+        fetcher: Any,
+    ) -> list[int]:
+        ids = await fetcher(
+            username,
+            client=http_client,
+            subject_type=subject_type,
+        )
+        await self._cache_set_ids(cache_key, ids)
+        return ids

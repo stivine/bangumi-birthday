@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from itertools import islice
 from typing import Any
 
 import httpx
@@ -19,10 +20,18 @@ BGM_API_BASE = "https://api.bgm.tv/v0"
 USER_AGENT = "stivine/bangumi-birthday/1.0 (https://github.com/stivine/bangumi-birthday)"
 PAGE_SIZE = 100
 MAX_OUTBOUND_CONCURRENCY = 20
+PAGE_FETCH_BATCH_SIZE = 5
 MAX_RETRIES = 2
 RETRY_BACKOFF_BASE = 0.3
 
 _BGM_REQUEST_SEM = asyncio.Semaphore(MAX_OUTBOUND_CONCURRENCY)
+
+
+def _iter_batches(values: range, size: int) -> Any:
+    """将偏移量按固定大小分批，避免一次性创建过多等待任务。"""
+    iterator = iter(values)
+    while batch := list(islice(iterator, size)):
+        yield batch
 
 
 async def _get_with_retry(
@@ -110,22 +119,21 @@ async def fetch_user_subject_ids(
         )
         return all_ids
 
-    # ── 并发获取剩余页（信号量限制并发数，避免连接池耗尽） ───────────────
+    # ── 分批获取剩余页，避免一次性在事件循环里堆积大量等待任务 ───────────
     offsets = range(PAGE_SIZE, total, PAGE_SIZE)
-    sem = asyncio.Semaphore(5)  # 单次请求最多 5 个并发连接
 
     async def _fetch_page(offset: int) -> list[int]:
-        async with sem:
-            page_params = {**params, "offset": offset}
-            r = await _get_with_retry(client, url, params=page_params)
-            if r.status_code != 200:
-                logger.warning("获取 offset=%d 失败：HTTP %d", offset, r.status_code)
-                return []
-            return [item["subject_id"] for item in r.json().get("data", [])]
+        page_params = {**params, "offset": offset}
+        r = await _get_with_retry(client, url, params=page_params)
+        if r.status_code != 200:
+            logger.warning("获取 offset=%d 失败：HTTP %d", offset, r.status_code)
+            return []
+        return [item["subject_id"] for item in r.json().get("data", [])]
 
-    pages = await asyncio.gather(*[_fetch_page(o) for o in offsets])
-    for page in pages:
-        all_ids.extend(page)
+    for batch in _iter_batches(offsets, PAGE_FETCH_BATCH_SIZE):
+        pages = await asyncio.gather(*(_fetch_page(offset) for offset in batch))
+        for page in pages:
+            all_ids.extend(page)
 
     elapsed = time.monotonic() - t0
     n_pages = 1 + len(list(offsets))
