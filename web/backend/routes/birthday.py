@@ -17,11 +17,7 @@ import time
 from datetime import date
 
 import httpx
-from quart import Blueprint, current_app, jsonify, request
-from web.backend.services.birthday_svc import (
-    UserSubjectLookupBusyError,
-    UserSubjectLookupTimeoutError,
-)
+from quart import Blueprint, current_app, g, jsonify, request
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +26,10 @@ birthday_bp = Blueprint("birthday", __name__, url_prefix="/api")
 
 def _today_str() -> str:
     return date.today().strftime("%m-%d")
+
+
+def _request_id() -> str:
+    return getattr(g, "request_id", "-")
 
 
 @birthday_bp.route("/")
@@ -83,7 +83,14 @@ async def user_birthday() -> tuple:
     subject_type_raw = request.args.get("subject_type")
     subject_type = int(subject_type_raw) if subject_type_raw else None
 
-    logger.info("hbd2waifu  user=%-20s  date=%s", userid, date_str)
+    req_id = _request_id()
+    logger.info(
+        "hbd2waifu start request_id=%s user=%-20s date=%s subject_type=%s",
+        req_id,
+        userid,
+        date_str,
+        subject_type,
+    )
 
     http_client: httpx.AsyncClient = current_app.extensions["http_client"]
     svc = current_app.extensions["birthday_svc"]
@@ -93,32 +100,34 @@ async def user_birthday() -> tuple:
             userid,
             http_client=http_client,
             subject_type=subject_type,
+            request_id=req_id,
         )
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             return jsonify({"error": f"用户 {userid!r} 不存在"}), 404
-        logger.error("Bangumi API 请求失败：%s", exc)
+        logger.error("Bangumi API 请求失败 request_id=%s: %s", req_id, exc)
         return jsonify({"error": "获取用户收藏失败，请稍后重试"}), 502
     except httpx.PoolTimeout as exc:
-        logger.warning("Bangumi API 连接池繁忙：%s", exc)
+        logger.warning("Bangumi API 连接池繁忙 request_id=%s: %s", req_id, exc)
         return jsonify({"error": "上游服务繁忙，请稍后重试"}), 503
     except httpx.RequestError as exc:
-        logger.error("Bangumi API 网络异常：%s", exc)
+        logger.error("Bangumi API 网络异常 request_id=%s: %s", req_id, exc)
         return jsonify({"error": "上游服务暂时不可用，请稍后重试"}), 503
-    except UserSubjectLookupBusyError:
-        return jsonify({"error": "当前查询过多，请稍后重试"}), 503
-    except UserSubjectLookupTimeoutError:
-        return jsonify({"error": "查询上游收藏超时，请稍后重试"}), 504
     except Exception as exc:
-        logger.exception("未知错误：%s", exc)
+        logger.exception("未知错误 request_id=%s: %s", req_id, exc)
         return jsonify({"error": "服务器内部错误"}), 500
 
     characters = await svc.get_characters_by_date(date_str, subject_ids=subject_ids)
 
     elapsed = time.monotonic() - t0
     logger.info(
-        "hbd2waifu  user=%-20s  date=%s  subjects=%d  results=%d  total=%.2fs",
-        userid, date_str, len(subject_ids), len(characters), elapsed,
+        "hbd2waifu done request_id=%s user=%-20s date=%s subjects=%d results=%d total=%.2fs",
+        req_id,
+        userid,
+        date_str,
+        len(subject_ids),
+        len(characters),
+        elapsed,
     )
 
     return jsonify(characters), 200

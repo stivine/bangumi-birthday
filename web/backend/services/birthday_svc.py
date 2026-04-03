@@ -21,18 +21,6 @@ from bangumi_birthday.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-MAX_CONCURRENT_USER_SUBJECT_FETCHES = 4
-USER_SUBJECT_FETCH_TIMEOUT_SECONDS = 20.0
-USER_SUBJECT_QUEUE_TIMEOUT_SECONDS = 2.0
-
-
-class UserSubjectLookupBusyError(RuntimeError):
-    """Bangumi 上游抓取已达到并发上限，当前请求不再继续排队。"""
-
-
-class UserSubjectLookupTimeoutError(RuntimeError):
-    """Bangumi 上游抓取超过服务端允许的等待时间。"""
-
 
 class BirthdayService:
     """
@@ -46,9 +34,7 @@ class BirthdayService:
         self._settings = get_settings()
         self._user_subject_lock = asyncio.Lock()
         self._user_subject_inflight: dict[str, asyncio.Task[list[int]]] = {}
-        self._user_subject_fetch_sem = asyncio.Semaphore(
-            MAX_CONCURRENT_USER_SUBJECT_FETCHES
-        )
+        self._active_user_subject_fetches = 0
 
     # ── 缓存辅助方法（所有 Redis 操作集中在此，统一做异常降级） ──────────
 
@@ -112,6 +98,7 @@ class BirthdayService:
         *,
         http_client: Any,
         subject_type: int | None = None,
+        request_id: str = "-",
     ) -> list[int]:
         """
         获取用户收藏的 subject_id 列表，结果缓存 user_cache_ttl 秒。
@@ -124,8 +111,24 @@ class BirthdayService:
         if subject_type is not None:
             cache_key += f":type{subject_type}"
 
+        logger.info(
+            "subject_ids lookup request_id=%s user=%s cache_key=%s inflight=%d active_fetches=%d",
+            request_id,
+            username,
+            cache_key,
+            len(self._user_subject_inflight),
+            self._active_user_subject_fetches,
+        )
+
         cached = await self._cache_get_ids(cache_key)
         if cached is not None:
+            logger.info(
+                "subject_ids cache hit request_id=%s user=%s cache_key=%s count=%d",
+                request_id,
+                username,
+                cache_key,
+                len(cached),
+            )
             return cached
 
         task = await self._get_or_create_user_subject_task(
@@ -134,8 +137,9 @@ class BirthdayService:
             http_client=http_client,
             subject_type=subject_type,
             fetcher=fetch_user_subject_ids,
+            request_id=request_id,
         )
-        return await asyncio.shield(task)
+        return await task
 
     async def get_characters_by_date(
         self,
@@ -239,11 +243,19 @@ class BirthdayService:
         http_client: Any,
         subject_type: int | None,
         fetcher: Any,
+        request_id: str,
     ) -> asyncio.Task[list[int]]:
         async with self._user_subject_lock:
             existing = self._user_subject_inflight.get(cache_key)
             if existing is not None:
-                logger.info("复用进行中的用户收藏抓取任务 %s", cache_key)
+                logger.info(
+                    "subject_ids inflight reuse request_id=%s user=%s cache_key=%s inflight=%d active_fetches=%d",
+                    request_id,
+                    username,
+                    cache_key,
+                    len(self._user_subject_inflight),
+                    self._active_user_subject_fetches,
+                )
                 return existing
 
             task = asyncio.create_task(
@@ -253,14 +265,33 @@ class BirthdayService:
                     http_client=http_client,
                     subject_type=subject_type,
                     fetcher=fetcher,
+                    request_id=request_id,
                 )
             )
             self._user_subject_inflight[cache_key] = task
+            logger.info(
+                "subject_ids inflight create request_id=%s user=%s cache_key=%s inflight=%d active_fetches=%d",
+                request_id,
+                username,
+                cache_key,
+                len(self._user_subject_inflight),
+                self._active_user_subject_fetches,
+            )
 
         def _cleanup(completed: asyncio.Task[list[int]]) -> None:
             current = self._user_subject_inflight.get(cache_key)
             if current is completed:
                 self._user_subject_inflight.pop(cache_key, None)
+                logger.info(
+                    "subject_ids inflight cleanup request_id=%s user=%s cache_key=%s inflight=%d active_fetches=%d cancelled=%s exc=%s",
+                    request_id,
+                    username,
+                    cache_key,
+                    len(self._user_subject_inflight),
+                    self._active_user_subject_fetches,
+                    completed.cancelled(),
+                    None if completed.cancelled() else completed.exception(),
+                )
 
         task.add_done_callback(_cleanup)
         return task
@@ -273,34 +304,47 @@ class BirthdayService:
         http_client: Any,
         subject_type: int | None,
         fetcher: Any,
+        request_id: str,
     ) -> list[int]:
-        acquired = False
+        t0 = asyncio.get_running_loop().time()
+        self._active_user_subject_fetches += 1
+        logger.info(
+            "subject_ids fetch start request_id=%s user=%s cache_key=%s active_fetches=%d inflight=%d",
+            request_id,
+            username,
+            cache_key,
+            self._active_user_subject_fetches,
+            len(self._user_subject_inflight),
+        )
         try:
-            try:
-                async with asyncio.timeout(USER_SUBJECT_QUEUE_TIMEOUT_SECONDS):
-                    await self._user_subject_fetch_sem.acquire()
-                    acquired = True
-            except TimeoutError as exc:
-                logger.warning("Bangumi API 并发已满，拒绝继续排队 %s", cache_key)
-                raise UserSubjectLookupBusyError(cache_key) from exc
-
-            try:
-                async with asyncio.timeout(USER_SUBJECT_FETCH_TIMEOUT_SECONDS):
-                    ids = await fetcher(
-                        username,
-                        client=http_client,
-                        subject_type=subject_type,
-                    )
-            except TimeoutError as exc:
-                logger.warning(
-                    "Bangumi API 抓取超时 %s timeout=%.1fs",
-                    cache_key,
-                    USER_SUBJECT_FETCH_TIMEOUT_SECONDS,
-                )
-                raise UserSubjectLookupTimeoutError(cache_key) from exc
-
+            ids = await fetcher(
+                username,
+                client=http_client,
+                subject_type=subject_type,
+                request_id=request_id,
+            )
             await self._cache_set_ids(cache_key, ids)
+            elapsed = asyncio.get_running_loop().time() - t0
+            logger.info(
+                "subject_ids fetch done request_id=%s user=%s cache_key=%s count=%d elapsed=%.2fs active_fetches=%d",
+                request_id,
+                username,
+                cache_key,
+                len(ids),
+                elapsed,
+                self._active_user_subject_fetches,
+            )
             return ids
+        except Exception:
+            elapsed = asyncio.get_running_loop().time() - t0
+            logger.exception(
+                "subject_ids fetch failed request_id=%s user=%s cache_key=%s elapsed=%.2fs active_fetches=%d",
+                request_id,
+                username,
+                cache_key,
+                elapsed,
+                self._active_user_subject_fetches,
+            )
+            raise
         finally:
-            if acquired:
-                self._user_subject_fetch_sem.release()
+            self._active_user_subject_fetches -= 1

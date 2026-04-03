@@ -86,6 +86,7 @@ async def test_birthday_service_deduplicates_inflight_subject_fetches() -> None:
         *,
         client: object,
         subject_type: int | None = None,
+        request_id: str = "-",
     ) -> list[int]:
         nonlocal calls
         calls += 1
@@ -100,6 +101,7 @@ async def test_birthday_service_deduplicates_inflight_subject_fetches() -> None:
             http_client=object(),
             subject_type=None,
             fetcher=fake_fetcher,
+            request_id="test-alice",
         )
         return await task
 

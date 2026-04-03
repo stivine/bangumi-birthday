@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
+import uuid
 
 import httpx
 import redis.asyncio as aioredis
-from quart import Quart
+from quart import Quart, g, request
 
 from web.backend.routes.birthday import birthday_bp
 
@@ -86,19 +88,15 @@ def create_app() -> Quart:
         app.extensions["redis"] = redis_client
 
         # httpx 异步 HTTP 客户端（复用连接池）
-        # 这里故意快速失败，避免连接池排队把整个服务拖死。
+        # limits: 每个 host 最多 20 个并发连接（Bangumi API 单域名）
+        # timeout: pool_timeout 单独设长，避免并发分页时连接池等待超时
         http_client = httpx.AsyncClient(
             headers={"User-Agent": settings.bgm_user_agent},
-            timeout=httpx.Timeout(
-                connect=10.0,
-                read=15.0,
-                write=10.0,
-                pool=2.0,
-            ),
+            timeout=httpx.Timeout(30.0, pool=60.0),
             limits=httpx.Limits(
-                max_connections=20,
-                max_keepalive_connections=10,
-                keepalive_expiry=15.0,
+                max_connections=100,
+                max_keepalive_connections=20,
+                keepalive_expiry=30.0,
             ),
             follow_redirects=True,
         )
@@ -125,6 +123,36 @@ def create_app() -> Quart:
     # ── 注册蓝图 ──────────────────────────────────────────────────────────
     app.register_blueprint(birthday_bp)
 
+    @app.before_request
+    async def log_request_start() -> None:
+        req_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex[:8]
+        g.request_id = req_id
+        g.request_started_at = time.monotonic()
+        logger.info(
+            "REQ START id=%s method=%s path=%s query=%s remote=%s",
+            req_id,
+            request.method,
+            request.path,
+            request.query_string.decode("utf-8", errors="ignore"),
+            request.headers.get("X-Forwarded-For", request.remote_addr),
+        )
+
+    @app.after_request
+    async def log_request_end(response):  # type: ignore[no-untyped-def]
+        req_id = getattr(g, "request_id", "-")
+        started_at = getattr(g, "request_started_at", None)
+        elapsed = time.monotonic() - started_at if started_at is not None else -1.0
+        logger.info(
+            "REQ END   id=%s method=%s path=%s status=%s elapsed=%.2fs",
+            req_id,
+            request.method,
+            request.path,
+            response.status_code,
+            elapsed,
+        )
+        response.headers["X-Request-Id"] = req_id
+        return response
+
     # ── 全局错误处理 ──────────────────────────────────────────────────────
     @app.errorhandler(404)
     async def not_found(exc: Exception):  # type: ignore[return]
@@ -133,7 +161,7 @@ def create_app() -> Quart:
 
     @app.errorhandler(500)
     async def server_error(exc: Exception):  # type: ignore[return]
-        logger.exception("未处理异常：%s", exc)
+        logger.exception("未处理异常 request_id=%s: %s", getattr(g, "request_id", "-"), exc)
         from quart import jsonify
         return jsonify({"error": "Internal Server Error"}), 500
 
