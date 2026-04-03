@@ -18,6 +18,10 @@ from datetime import date
 
 import httpx
 from quart import Blueprint, current_app, jsonify, request
+from web.backend.services.birthday_svc import (
+    UserSubjectLookupBusyError,
+    UserSubjectLookupTimeoutError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +105,10 @@ async def user_birthday() -> tuple:
     except httpx.RequestError as exc:
         logger.error("Bangumi API 网络异常：%s", exc)
         return jsonify({"error": "上游服务暂时不可用，请稍后重试"}), 503
+    except UserSubjectLookupBusyError:
+        return jsonify({"error": "当前查询过多，请稍后重试"}), 503
+    except UserSubjectLookupTimeoutError:
+        return jsonify({"error": "查询上游收藏超时，请稍后重试"}), 504
     except Exception as exc:
         logger.exception("未知错误：%s", exc)
         return jsonify({"error": "服务器内部错误"}), 500

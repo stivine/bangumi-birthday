@@ -21,6 +21,18 @@ from bangumi_birthday.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+MAX_CONCURRENT_USER_SUBJECT_FETCHES = 4
+USER_SUBJECT_FETCH_TIMEOUT_SECONDS = 20.0
+USER_SUBJECT_QUEUE_TIMEOUT_SECONDS = 2.0
+
+
+class UserSubjectLookupBusyError(RuntimeError):
+    """Bangumi 上游抓取已达到并发上限，当前请求不再继续排队。"""
+
+
+class UserSubjectLookupTimeoutError(RuntimeError):
+    """Bangumi 上游抓取超过服务端允许的等待时间。"""
+
 
 class BirthdayService:
     """
@@ -34,6 +46,9 @@ class BirthdayService:
         self._settings = get_settings()
         self._user_subject_lock = asyncio.Lock()
         self._user_subject_inflight: dict[str, asyncio.Task[list[int]]] = {}
+        self._user_subject_fetch_sem = asyncio.Semaphore(
+            MAX_CONCURRENT_USER_SUBJECT_FETCHES
+        )
 
     # ── 缓存辅助方法（所有 Redis 操作集中在此，统一做异常降级） ──────────
 
@@ -120,7 +135,7 @@ class BirthdayService:
             subject_type=subject_type,
             fetcher=fetch_user_subject_ids,
         )
-        return await task
+        return await asyncio.shield(task)
 
     async def get_characters_by_date(
         self,
@@ -259,10 +274,33 @@ class BirthdayService:
         subject_type: int | None,
         fetcher: Any,
     ) -> list[int]:
-        ids = await fetcher(
-            username,
-            client=http_client,
-            subject_type=subject_type,
-        )
-        await self._cache_set_ids(cache_key, ids)
-        return ids
+        acquired = False
+        try:
+            try:
+                async with asyncio.timeout(USER_SUBJECT_QUEUE_TIMEOUT_SECONDS):
+                    await self._user_subject_fetch_sem.acquire()
+                    acquired = True
+            except TimeoutError as exc:
+                logger.warning("Bangumi API 并发已满，拒绝继续排队 %s", cache_key)
+                raise UserSubjectLookupBusyError(cache_key) from exc
+
+            try:
+                async with asyncio.timeout(USER_SUBJECT_FETCH_TIMEOUT_SECONDS):
+                    ids = await fetcher(
+                        username,
+                        client=http_client,
+                        subject_type=subject_type,
+                    )
+            except TimeoutError as exc:
+                logger.warning(
+                    "Bangumi API 抓取超时 %s timeout=%.1fs",
+                    cache_key,
+                    USER_SUBJECT_FETCH_TIMEOUT_SECONDS,
+                )
+                raise UserSubjectLookupTimeoutError(cache_key) from exc
+
+            await self._cache_set_ids(cache_key, ids)
+            return ids
+        finally:
+            if acquired:
+                self._user_subject_fetch_sem.release()

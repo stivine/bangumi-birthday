@@ -86,15 +86,19 @@ def create_app() -> Quart:
         app.extensions["redis"] = redis_client
 
         # httpx 异步 HTTP 客户端（复用连接池）
-        # limits: 每个 host 最多 20 个并发连接（Bangumi API 单域名）
-        # timeout: pool_timeout 单独设长，避免并发分页时连接池等待超时
+        # 这里故意快速失败，避免连接池排队把整个服务拖死。
         http_client = httpx.AsyncClient(
             headers={"User-Agent": settings.bgm_user_agent},
-            timeout=httpx.Timeout(30.0, pool=60.0),
+            timeout=httpx.Timeout(
+                connect=10.0,
+                read=15.0,
+                write=10.0,
+                pool=2.0,
+            ),
             limits=httpx.Limits(
-                max_connections=100,
-                max_keepalive_connections=20,
-                keepalive_expiry=30.0,
+                max_connections=20,
+                max_keepalive_connections=10,
+                keepalive_expiry=15.0,
             ),
             follow_redirects=True,
         )
